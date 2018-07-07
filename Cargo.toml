@@ -9,4 +9,4 @@ keywords = ["iota"]
 repository = "https://github.com/njaremko/iota-spammer"
 
 [dependencies]
-iota-lib-rs = "*"
+iota-lib-rs = "0.0.24"
