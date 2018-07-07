@@ -2,6 +2,11 @@
 name = "iota-spammer"
 version = "0.0.1"
 authors = ["Nathan Jaremko <nathan@jaremko.ca>"]
+description = "A rust implementation of the IOTA API"
+license = "MIT"
+readme = "README.md"
+keywords = ["iota"]
+repository = "https://github.com/njaremko/iota-spammer"
 
 [dependencies]
 iota-lib-rs = "*"
