@@ -89,7 +89,8 @@ fn main() -> Result<(), Error> {
     );
     println!("{}", "*".repeat(terminal_width));
 
-    let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(5);
+    // Create a bounded channel and feed it results till it's full (in the background)
+    let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(4);
     let t_uri = uri.to_owned();
     thread::spawn(move || {
         loop {
@@ -98,6 +99,7 @@ fn main() -> Result<(), Error> {
         }
     });
 
+    // Iterate over the transactions to approve and do PoW
     let mut i = 0;
     for tx_to_approve in rx.iter() {
         let api = iota_api::API::new(uri);
