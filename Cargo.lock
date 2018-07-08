@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "iota-spammer"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "clap 2.32.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
