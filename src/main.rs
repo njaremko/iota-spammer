@@ -3,6 +3,7 @@ extern crate failure;
 extern crate iota_lib_rs;
 extern crate num_cpus;
 extern crate term_size;
+extern crate openssl_probe;
 
 use std::sync::mpsc::sync_channel;
 use std::thread;
@@ -17,6 +18,7 @@ use iota_lib_rs::model::*;
 use iota_lib_rs::utils::trytes_converter;
 
 fn main() -> Result<(), Error> {
+    openssl_probe::init_ssl_cert_env_vars();
     let matches = App::new("Iota Spammer")
         .version("0.0.1")
         .author("Nathan J. <nathan@jaremko.ca>")
