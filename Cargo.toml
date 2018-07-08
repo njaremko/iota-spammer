@@ -1,6 +1,6 @@
 [package]
 name = "iota-spammer"
-version = "0.0.4"
+version = "0.0.5"
 authors = ["Nathan Jaremko <nathan@jaremko.ca>"]
 description = "A iota transaction spammer"
 license = "MIT"

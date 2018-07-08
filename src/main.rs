@@ -25,7 +25,7 @@ fn main() -> Result<(), Error> {
             Arg::with_name("remote")
                 .short("r")
                 .long("remote")
-                .help("Sets which IRI to spam (must be http/https)")
+                .help("Sets which IRI to spam (might need to be http/https...I haven't tested with UDP)")
                 .takes_value(true),
         )
         .arg(
@@ -42,6 +42,20 @@ fn main() -> Result<(), Error> {
                 .help("Sets how many threads to use for PoW")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("queue")
+                .short("q")
+                .long("queue")
+                .help("Number of transactions to approve requests to queue")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("weight")
+                .short("w")
+                .long("weight")
+                .help("Sets the min weight threshold")
+                .takes_value(true),
+        )
         .get_matches();
 
     let trytes =
@@ -52,11 +66,34 @@ fn main() -> Result<(), Error> {
         .unwrap_or("https://field.carriota.com");
     let address: String = matches.value_of("address").unwrap_or(trytes).into();
     let threads_str = matches.value_of("threads").unwrap_or_default();
-
+    let queue_str = matches.value_of("queue").unwrap_or_default();
+    let queue_size = if !queue_str.is_empty() {
+        let mut tmp: usize = queue_str.parse()?;
+        if tmp > 0 {
+            tmp
+        } else {
+            5
+        }
+    } else {
+        5
+    };
+    let weight_str = matches.value_of("weight").unwrap_or_default();
     let threads = if threads_str.is_empty() {
         num_cpus::get()
     } else {
         threads_str.parse()?
+    };
+    let weight = if !weight_str.is_empty() {
+        let mut tmp: usize = weight_str.parse()?;
+        if tmp < 9 {
+            9
+        } else if tmp > 14 {
+            14
+        } else {
+            tmp
+        }
+    } else {
+        14
     };
 
     let message = trytes_converter::to_trytes("Hello World").unwrap();
@@ -80,6 +117,8 @@ fn main() -> Result<(), Error> {
     println!("{} Iota Spammer {}", title_style, title_style);
     println!("Spamming IRI: {}", uri);
     println!("PoW Threads: {}", threads);
+    println!("Min Weight Magnitude: {}", weight);
+    println!("Queue size: {}", queue_size);
     println!(
         "Spamming address: {}...",
         address
@@ -90,7 +129,7 @@ fn main() -> Result<(), Error> {
     println!("{}", "*".repeat(terminal_width));
 
     // Create a bounded channel and feed it results till it's full (in the background)
-    let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(4);
+    let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(queue_size);
     let t_uri = uri.to_owned();
     thread::spawn(move || {
         loop {
@@ -112,7 +151,7 @@ fn main() -> Result<(), Error> {
             Some(threads),
             &tx_to_approve.trunk_transaction().unwrap(),
             &tx_to_approve.branch_transaction().unwrap(),
-            14,
+            weight,
             &prepared_trytes,
         )?.trytes()
             .unwrap();
