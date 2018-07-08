@@ -31,17 +31,32 @@ fn main() -> Result<(), Error> {
                 .help("Sets which address to spam")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("threads")
+                .short("t")
+                .long("threads")
+                .help("Sets how many threads to use for PoW")
+                .takes_value(true),
+        )
         .get_matches();
 
     let trytes =
         "RUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTR";
+    
     let uri = matches.value_of("remote").unwrap_or("https://field.carriota.com");
-    let address = matches.value_of("address").unwrap_or(trytes.clone());
+    let address: String = matches.value_of("address").unwrap_or(trytes).into();
+    let threads_str = matches.value_of("threads").unwrap_or_default();
+    
+    let threads = if threads_str.is_empty() {
+        num_cpus::get()
+    } else {
+        threads_str.parse()?
+    };
 
     let message = trytes_converter::to_trytes("Hello World").unwrap();
     let mut transfer = Transfer::default();
     transfer.set_value(0);
-    transfer.set_address(address);
+    transfer.set_address(address.clone());
     transfer.set_message(message);
 
     let mut terminal_width = 30;
@@ -52,9 +67,10 @@ fn main() -> Result<(), Error> {
     }
     let title_w = (terminal_width-14)/2;
     let title_style = "*".repeat(title_w);
+
     println!("{} Iota Spammer {}", title_style, title_style);
     println!("Spamming IRI: {}", uri);
-    println!("PoW Threads: {}", num_cpus::get());
+    println!("PoW Threads: {}", threads);
     println!("Spamming address: {}...", address.chars().take(terminal_width-22).collect::<String>());
     println!("{}", "*".repeat(terminal_width));
 
@@ -64,7 +80,7 @@ fn main() -> Result<(), Error> {
         let before = Instant::now();
         let tx =
             api.send_transfers(
-                trytes, 3, 14, &transfer, true, None, &None, &None, None, None,
+                trytes, 3, 14, &transfer, true, Some(threads), None, &None, &None, None, None,
             ).unwrap();
         let after = Instant::now();
         println!("Transaction {}: {:?}", i, tx[0].hash().unwrap());

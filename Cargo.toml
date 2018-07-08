@@ -1,6 +1,6 @@
 [package]
 name = "iota-spammer"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Nathan Jaremko <nathan@jaremko.ca>"]
 description = "A iota transaction spammer"
 license = "MIT"
@@ -11,6 +11,6 @@ repository = "https://github.com/njaremko/iota-spammer"
 [dependencies]
 clap = "2.32"
 failure = "0.1"
-iota-lib-rs = "0.0.24"
+iota-lib-rs = "0.0.26"
 num_cpus = "1.8"
 term_size = "0.3"
