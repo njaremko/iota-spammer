@@ -136,7 +136,7 @@ fn main() -> Result<(), Error> {
     thread::spawn(move || {
         loop {
             tx.send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap()).unwrap();
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(100));
         }
     });
 
@@ -144,7 +144,7 @@ fn main() -> Result<(), Error> {
     let mut i = 0;
     for tx_to_approve in rx.iter() {
         let api = iota_api::API::new(uri);
-
+        
         let prepared_trytes =
             api.prepare_transfers(trytes, (&transfer).into(), None, &None, None, None)?;
 
