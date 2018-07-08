@@ -1,12 +1,16 @@
 [package]
 name = "iota-spammer"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Nathan Jaremko <nathan@jaremko.ca>"]
-description = "A rust implementation of the IOTA API"
+description = "A iota transaction spammer"
 license = "MIT"
 readme = "README.md"
 keywords = ["iota"]
 repository = "https://github.com/njaremko/iota-spammer"
 
 [dependencies]
+clap = "2.32"
+failure = "0.1"
 iota-lib-rs = "0.0.24"
+num_cpus = "1.8"
+term_size = "0.3"
