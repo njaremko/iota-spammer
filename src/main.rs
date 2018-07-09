@@ -20,7 +20,7 @@ use iota_lib_rs::utils::trytes_converter;
 fn main() -> Result<(), Error> {
     openssl_probe::init_ssl_cert_env_vars();
     let matches = App::new("Iota Spammer")
-        .version("0.0.6")
+        .version("0.0.7")
         .author("Nathan J. <nathan@jaremko.ca>")
         .about("Spams the Iota Network")
         .arg(
@@ -148,40 +148,66 @@ fn main() -> Result<(), Error> {
     println!("{}", "*".repeat(terminal_width));
 
     // Create a bounded channel and feed it results till it's full (in the background)
-    let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(queue_size);
+    let (approval_tx, approval_rx) =
+        sync_channel::<responses::GetTransactionsToApprove>(queue_size);
     let t_uri = uri.to_owned();
     thread::spawn(move || loop {
-        tx.send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap())
+        approval_tx
+            .send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap())
             .unwrap();
         thread::sleep(Duration::from_millis(100));
     });
 
+    let (pow_tx, pow_rx) = sync_channel::<Vec<String>>(queue_size);
+    let t_uri = uri.to_owned();
+    thread::spawn(move || loop {
+        let api = iota_api::API::new(&t_uri);
+        for tx_to_approve in approval_rx.iter() {
+            let prepared_trytes = api
+                .prepare_transfers(&address, &transfer, None, None, None, None)
+                .unwrap();
+            pow_tx
+                .send(
+                    iri_api::attach_to_tangle_local(
+                        threads_to_use,
+                        &tx_to_approve.trunk_transaction().unwrap(),
+                        &tx_to_approve.branch_transaction().unwrap(),
+                        weight,
+                        &prepared_trytes,
+                    ).unwrap()
+                        .trytes()
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+    });
+
+    let (broadcast_tx, broadcast_rx) = sync_channel::<Vec<String>>(queue_size);
+    let t_uri = uri.to_owned();
+    thread::spawn(move || loop {
+        let api = iota_api::API::new(&t_uri);
+        for pow_trytes in pow_rx.iter() {
+            api.store_and_broadcast(&pow_trytes).unwrap();
+            broadcast_tx.send(pow_trytes).unwrap();
+        }
+    });
+
     // Iterate over the transactions to approve and do PoW
-    for (i, tx_to_approve) in rx.iter().enumerate() {
-        let api = iota_api::API::new(uri);
-
-        let prepared_trytes = api.prepare_transfers(&address, &transfer, None, None, None, None)?;
-
-        let before = Instant::now();
-        let trytes_list = iri_api::attach_to_tangle_local(
-            threads_to_use,
-            &tx_to_approve.trunk_transaction().unwrap(),
-            &tx_to_approve.branch_transaction().unwrap(),
-            weight,
-            &prepared_trytes,
-        )?.trytes()
-            .unwrap();
-
-        api.store_and_broadcast(&trytes_list)?;
-
-        let tx: Vec<Transaction> = trytes_list
+    let mut before = Instant::now();
+    for (i, sent_trytes) in broadcast_rx.iter().enumerate() {
+        let tx: Vec<Transaction> = sent_trytes
             .iter()
             .map(|trytes| trytes.parse().unwrap())
             .collect();
 
-        let after = Instant::now();
         println!("Transaction {}: {:?}", i, tx[0].hash().unwrap());
-        println!("Took {} seconds", after.duration_since(before).as_secs());
+        if i > 0 && i % 10 == 0 {
+            println!(
+                "Average TXs/Sec: {:.2}",
+                1_f64 / (Instant::now().duration_since(before).as_secs() as f64 / 10_f64)
+            );
+            before = Instant::now();
+        }
     }
     Ok(())
 }
