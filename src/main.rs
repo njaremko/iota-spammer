@@ -2,12 +2,12 @@ extern crate clap;
 extern crate failure;
 extern crate iota_lib_rs;
 extern crate num_cpus;
-extern crate term_size;
 extern crate openssl_probe;
+extern crate term_size;
 
 use std::sync::mpsc::sync_channel;
 use std::thread;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use clap::{App, Arg};
 use failure::Error;
@@ -20,7 +20,7 @@ use iota_lib_rs::utils::trytes_converter;
 fn main() -> Result<(), Error> {
     openssl_probe::init_ssl_cert_env_vars();
     let matches = App::new("Iota Spammer")
-        .version("0.0.1")
+        .version("0.0.6")
         .author("Nathan J. <nathan@jaremko.ca>")
         .about("Spams the Iota Network")
         .arg(
@@ -58,6 +58,13 @@ fn main() -> Result<(), Error> {
                 .help("Sets the min weight threshold")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("message")
+                .short("m")
+                .long("message")
+                .help("Sets message for spam transactions")
+                .takes_value(true),
+        )
         .get_matches();
 
     let trytes =
@@ -67,7 +74,21 @@ fn main() -> Result<(), Error> {
         .value_of("remote")
         .unwrap_or("https://field.carriota.com");
     let address: String = matches.value_of("address").unwrap_or(trytes).into();
+    let message = matches.value_of("message").unwrap_or("Hello World");
+    let encoded_message = trytes_converter::to_trytes(message).unwrap();
     let threads_str = matches.value_of("threads").unwrap_or_default();
+    let actual_thread_count = num_cpus::get();
+    let threads_to_use = if !threads_str.is_empty() {
+        let tmp: usize = threads_str.parse()?;
+        if tmp > 0 && tmp <= actual_thread_count {
+            tmp
+        } else {
+            actual_thread_count
+        }
+    } else {
+        actual_thread_count
+    };
+
     let queue_str = matches.value_of("queue").unwrap_or_default();
     let queue_size = if !queue_str.is_empty() {
         let mut tmp: usize = queue_str.parse()?;
@@ -79,12 +100,8 @@ fn main() -> Result<(), Error> {
     } else {
         5
     };
+
     let weight_str = matches.value_of("weight").unwrap_or_default();
-    let threads = if threads_str.is_empty() {
-        num_cpus::get()
-    } else {
-        threads_str.parse()?
-    };
     let weight = if !weight_str.is_empty() {
         let mut tmp: usize = weight_str.parse()?;
         if tmp < 9 {
@@ -98,11 +115,10 @@ fn main() -> Result<(), Error> {
         14
     };
 
-    let message = trytes_converter::to_trytes("Hello World").unwrap();
     let mut transfer = Transfer::default();
     transfer.set_value(0);
     transfer.set_address(address.clone());
-    transfer.set_message(message);
+    transfer.set_message(encoded_message.clone());
 
     let mut terminal_width = 30;
     if let Some((w, _)) = term_size::dimensions() {
@@ -118,9 +134,10 @@ fn main() -> Result<(), Error> {
 
     println!("{} Iota Spammer {}", title_style, title_style);
     println!("Spamming IRI: {}", uri);
-    println!("PoW Threads: {}", threads);
+    println!("PoW Threads: {}", threads_to_use);
     println!("Min Weight Magnitude: {}", weight);
     println!("Queue size: {}", queue_size);
+    println!("Spam Message: {}", message);
     println!(
         "Spamming address: {}...",
         address
@@ -133,24 +150,21 @@ fn main() -> Result<(), Error> {
     // Create a bounded channel and feed it results till it's full (in the background)
     let (tx, rx) = sync_channel::<responses::GetTransactionsToApprove>(queue_size);
     let t_uri = uri.to_owned();
-    thread::spawn(move || {
-        loop {
-            tx.send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap()).unwrap();
-            thread::sleep(Duration::from_millis(100));
-        }
+    thread::spawn(move || loop {
+        tx.send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap())
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
     });
 
     // Iterate over the transactions to approve and do PoW
-    let mut i = 0;
-    for tx_to_approve in rx.iter() {
+    for (i, tx_to_approve) in rx.iter().enumerate() {
         let api = iota_api::API::new(uri);
-        
-        let prepared_trytes =
-            api.prepare_transfers(trytes, (&transfer).into(), None, &None, None, None)?;
+
+        let prepared_trytes = api.prepare_transfers(&address, &transfer, None, None, None, None)?;
 
         let before = Instant::now();
         let trytes_list = iri_api::attach_to_tangle_local(
-            Some(threads),
+            threads_to_use,
             &tx_to_approve.trunk_transaction().unwrap(),
             &tx_to_approve.branch_transaction().unwrap(),
             weight,
@@ -168,7 +182,6 @@ fn main() -> Result<(), Error> {
         let after = Instant::now();
         println!("Transaction {}: {:?}", i, tx[0].hash().unwrap());
         println!("Took {} seconds", after.duration_since(before).as_secs());
-        i += 1;
     }
     Ok(())
 }
