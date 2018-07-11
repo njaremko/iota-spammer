@@ -20,13 +20,20 @@ use iota_lib_rs::utils::trytes_converter;
 fn main() -> Result<(), Error> {
     openssl_probe::init_ssl_cert_env_vars();
     let matches = App::new("Iota Spammer")
-        .version("0.0.7")
+        .version("0.0.8")
         .author("Nathan J. <nathan@jaremko.ca>")
         .about("Spams the Iota Network")
         .arg(
-            Arg::with_name("remote")
+            Arg::with_name("reference")
                 .short("r")
-                .long("remote")
+                .long("reference")
+                .help("Sets the reference TX")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("iri")
+                .short("i")
+                .long("iri")
                 .help("Sets which IRI to spam (might need to be http/https...I haven't tested with UDP)")
                 .takes_value(true),
         )
@@ -71,8 +78,12 @@ fn main() -> Result<(), Error> {
         "RUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTRUSTR";
 
     let uri = matches
-        .value_of("remote")
+        .value_of("iri")
         .unwrap_or("https://field.carriota.com");
+    let reference: Option<String> = match matches.value_of("reference") {
+        Some(t) => Some(t.to_string()),
+        None => None,
+    };
     let address: String = matches.value_of("address").unwrap_or(trytes).into();
     let message = matches.value_of("message").unwrap_or("Hello World");
     let encoded_message = trytes_converter::to_trytes(message).unwrap();
@@ -145,6 +156,9 @@ fn main() -> Result<(), Error> {
             .take(terminal_width - 22)
             .collect::<String>()
     );
+    if let Some(reference) = &reference {
+        println!("Reference TX: {}", reference);
+    }
     println!("{}", "*".repeat(terminal_width));
 
     // Create a bounded channel and feed it results till it's full (in the background)
@@ -152,9 +166,12 @@ fn main() -> Result<(), Error> {
         sync_channel::<responses::GetTransactionsToApprove>(queue_size);
     let t_uri = uri.to_owned();
     thread::spawn(move || loop {
-        approval_tx
-            .send(iri_api::get_transactions_to_approve(&t_uri, 3, &None).unwrap())
-            .unwrap();
+        match iri_api::get_transactions_to_approve(&t_uri, 3, &reference) {
+            Ok(tx_to_approve) => {
+                approval_tx.send(tx_to_approve).unwrap();
+            },
+            Err(e) => eprintln!("Error: {}", e),
+        }
         thread::sleep(Duration::from_millis(100));
     });
 
@@ -163,22 +180,23 @@ fn main() -> Result<(), Error> {
     thread::spawn(move || loop {
         let api = iota_api::API::new(&t_uri);
         for tx_to_approve in approval_rx.iter() {
-            let prepared_trytes = api
-                .prepare_transfers(&address, &transfer, None, None, None, None)
-                .unwrap();
-            pow_tx
-                .send(
-                    iri_api::attach_to_tangle_local(
+            match api.prepare_transfers(&address, &transfer, None, None, None, None) {
+                Ok(prepared_trytes) => {
+                    match iri_api::attach_to_tangle_local(
                         threads_to_use,
                         &tx_to_approve.trunk_transaction().unwrap(),
                         &tx_to_approve.branch_transaction().unwrap(),
                         weight,
                         &prepared_trytes,
-                    ).unwrap()
-                        .trytes()
-                        .unwrap(),
-                )
-                .unwrap();
+                    ) {
+                        Ok(powed_trytes) => {
+                            pow_tx.send(powed_trytes.trytes().unwrap()).unwrap();
+                        },
+                        Err(e) => eprintln!("Error: {}", e),
+                    }
+                },
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
     });
 
@@ -187,7 +205,9 @@ fn main() -> Result<(), Error> {
     thread::spawn(move || loop {
         let api = iota_api::API::new(&t_uri);
         for pow_trytes in pow_rx.iter() {
-            api.store_and_broadcast(&pow_trytes).unwrap();
+            if let Err(e) = api.store_and_broadcast(&pow_trytes) {
+                eprintln!("Error: {}", e);
+            }
             broadcast_tx.send(pow_trytes).unwrap();
         }
     });
