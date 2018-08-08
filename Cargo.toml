@@ -14,8 +14,10 @@ repository = "https://github.com/njaremko/iota-spammer"
 [dependencies]
 clap = "2.32"
 failure = "0.1"
-iota-lib-rs = "0.0.34"
+futures-preview = "0.3.0-alpha.2"
+iota-lib-rs-preview = { path = "../iota-lib-rs" }
 num_cpus = "1.8"
 term_size = "0.3"
 openssl-probe = "0.1.2"
 reqwest = "0.8"
+crossbeam = "0.4.1"
