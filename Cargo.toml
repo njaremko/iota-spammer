@@ -3,7 +3,7 @@ cargo-features = ["edition"]
 [package]
 name = "iota-spammer"
 edition = '2018'
-version = "0.0.10"
+version = "0.0.11"
 authors = ["Nathan Jaremko <nathan@jaremko.ca>"]
 description = "A iota transaction spammer"
 license = "MIT"
@@ -15,7 +15,7 @@ repository = "https://github.com/njaremko/iota-spammer"
 clap = "2.32"
 failure = "0.1"
 futures-preview = "0.3.0-alpha.2"
-iota-lib-rs-preview = { path = "../iota-lib-rs" }
+iota-lib-rs-preview = "0.1.4"
 num_cpus = "1.8"
 term_size = "0.3"
 openssl-probe = "0.1.2"
