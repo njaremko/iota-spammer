@@ -188,11 +188,7 @@ fn main() -> Result<(), Error> {
             3,
             reference.clone(),
         )) {
-            Ok(tx_to_approve) => loop {
-                if let Ok(()) = approval_tx.try_send(tx_to_approve.clone()) {
-                    break;
-                };
-            },
+            Ok(tx_to_approve) => block_on(approval_tx.send(tx_to_approve.clone())).unwrap(),
             Err(e) => eprintln!("gTTA Error: {}", e),
         };
     });
