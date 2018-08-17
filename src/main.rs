@@ -1,8 +1,10 @@
 #![feature(rust_2018_preview)]
-#![feature(rust_2018_idioms)]
 #![feature(futures_api)]
 #![feature(async_await)]
 #![feature(await_macro)]
+#![feature(mpsc_select)]
+#![feature(nll)]
+#![feature(duration_as_u128)]
 
 extern crate clap;
 extern crate failure;
@@ -12,6 +14,7 @@ extern crate openssl_probe;
 extern crate reqwest;
 extern crate term_size;
 
+use std::sync::atomic;
 use std::thread;
 use std::time::Instant;
 
@@ -23,17 +26,16 @@ use iota_lib_rs::iri_api::responses;
 use iota_lib_rs::model::*;
 use iota_lib_rs::utils::trytes_converter;
 
+use futures::channel::mpsc;
 use futures::executor::block_on;
-use futures::executor::spawn;
-
-use crossbeam::channel;
-
+use futures::prelude::*;
+use futures::spawn;
 use reqwest::Client;
 
 fn main() -> Result<(), Error> {
     openssl_probe::init_ssl_cert_env_vars();
     let matches = App::new("Iota Spammer")
-        .version("0.0.11")
+        .version("0.0.12")
         .author("Nathan J. <nathan@jaremko.ca>")
         .about("Spams the Iota Network")
         .arg(
@@ -171,138 +173,129 @@ fn main() -> Result<(), Error> {
         println!("Reference TX: {}", reference);
     }
     println!("{}", "*".repeat(terminal_width));
+    let start = Instant::now();
 
-    // Create a bounded channel and feed it results till it's full (in the background)
-    let (approval_tx, approval_rx) = channel::bounded(queue_size);
-    let t_uri = uri.to_owned();
-    get_tx_to_approve_thread(t_uri, approval_tx, reference);
+    let (mut approval_tx, approval_rx) = mpsc::channel(queue_size);
+    let (pow_tx, pow_rx) = mpsc::channel(queue_size);
+    let client = Client::new();
+    let tx_uri = uri.to_string();
 
-    let (pow_tx, pow_rx) = channel::bounded(queue_size); //sync_channel::<Vec<String>>(queue_size);
-    let t_uri = uri.to_owned();
-    prepare_transfers_thread(
-        t_uri,
-        pow_tx,
+    // Start a thread to populate the tx_to_approve channel
+    thread::spawn(move || loop {
+        match block_on(iri_api::get_transactions_to_approve(
+            &client,
+            tx_uri.clone(),
+            3,
+            reference.clone(),
+        )) {
+            Ok(tx_to_approve) => loop {
+                if let Ok(()) = approval_tx.try_send(tx_to_approve.clone()) {
+                    break;
+                };
+            },
+            Err(e) => eprintln!("gTTA Error: {}", e),
+        };
+    });
+
+    // Start processing transactions
+    block_on(processor(
+        uri.to_string(),
         approval_rx,
+        pow_tx,
+        pow_rx,
         address,
         transfer,
         threads_to_use,
         weight,
-    );
-
-    let (broadcast_tx, broadcast_rx) = channel::bounded(queue_size);
-    let t_uri = uri.to_owned();
-    store_and_broadcast_thread(t_uri, broadcast_tx, pow_rx);
-
-    // Iterate over the transactions to approve and do PoW
-    let mut before = Instant::now();
-    let mut i = 1;
-    for sent_trytes in broadcast_rx {
-        let tx: Vec<Transaction> = sent_trytes
-            .iter()
-            .map(|trytes| trytes.parse().unwrap())
-            .collect();
-
-        println!("Transaction {}: {:?}", i, tx[0].hash().unwrap());
-
-        if i % 10 == 0 {
-            println!(
-                "Average TXs/Sec: {:.2}",
-                1_f64 / (Instant::now().duration_since(before).as_secs() as f64 / 10_f64)
-            );
-            before = Instant::now();
-        }
-        i += 1;
-    }
+    ));
     Ok(())
 }
 
-fn get_tx_to_approve_thread(
+async fn processor(
     uri: String,
-    approval_tx: channel::internal::channel::Sender<responses::GetTransactionsToApprove>,
-    reference: Option<String>,
-) {
-    thread::spawn(move || {
-        let client = Client::new();
-        loop {
-            match block_on(iri_api::get_transactions_to_approve(
-                client.clone(),
-                uri.clone(),
-                3,
-                reference.clone(),
-            )) {
-                Ok(tx_to_approve) => {
-                    approval_tx.send(tx_to_approve);
-                }
-                Err(e) => eprintln!("gTTA Error: {}", e),
-            };
-        }
-    });
-}
-
-fn prepare_transfers_thread(
-    uri: String,
-    pow_tx: channel::internal::channel::Sender<Vec<String>>,
-    approval_rx: channel::internal::channel::Receiver<responses::GetTransactionsToApprove>,
+    approval_rx: mpsc::Receiver<responses::GetTransactionsToApprove>,
+    pow_tx: mpsc::Sender<Vec<String>>,
+    pow_rx: mpsc::Receiver<Vec<String>>,
     address: String,
     transfer: Transfer,
     threads_to_use: usize,
     weight: usize,
 ) {
-    thread::spawn(move || {
-        let api = iota_api::API::new(&uri);
-        for tx_to_approve in approval_rx {
-            match block_on(api.prepare_transfers(
-                address.clone(),
-                vec![transfer.clone()],
-                None,
-                None,
-                None,
-                None,
+    let tx_count = atomic::AtomicUsize::new(0);
+    // Clone uri here because we need to move values into async functions (so they live long enough)
+    let broadcast_uri = uri.clone();
+    // Spawn the worker to handle proof of work, note that it is sequential because
+    // trying to do many PoW at once is probably dumb
+    spawn!(approval_rx.for_each(move |tx_to_approve| prepare_transfer(
+        uri.clone(),
+        tx_to_approve,
+        pow_tx.clone(),
+        address.clone(),
+        transfer.clone(),
+        threads_to_use,
+        weight,
+    ))).unwrap();
+
+    await!(
+        pow_rx.for_each_concurrent(num_cpus::get(), |pow_trytes| store_and_broadcast(
+            broadcast_uri.clone(),
+            pow_trytes,
+            &tx_count
+        ))
+    );
+}
+
+async fn prepare_transfer(
+    uri: String,
+    tx_to_approve: responses::GetTransactionsToApprove,
+    mut pow_tx: mpsc::Sender<Vec<String>>,
+    address: String,
+    transfer: Transfer,
+    threads_to_use: usize,
+    weight: usize,
+) {
+    let api = iota_api::API::new(&uri);
+    match await!(api.prepare_transfers(
+        address.clone(),
+        vec![transfer.clone()],
+        None,
+        None,
+        None,
+        None,
+    )) {
+        Ok(prepared_trytes) => {
+            match await!(iri_api::attach_to_tangle_local(
+                Some(threads_to_use),
+                tx_to_approve.trunk_transaction().unwrap(),
+                tx_to_approve.branch_transaction().unwrap(),
+                weight,
+                prepared_trytes,
             )) {
-                Ok(prepared_trytes) => {
-                    match block_on(iri_api::attach_to_tangle_local(
-                        Some(threads_to_use),
-                        tx_to_approve.trunk_transaction().unwrap(),
-                        tx_to_approve.branch_transaction().unwrap(),
-                        weight,
-                        prepared_trytes,
-                    )) {
-                        Ok(powed_trytes) => {
-                            pow_tx.send(powed_trytes.trytes().unwrap());
-                        }
-                        Err(e) => eprintln!("Prepare Transfers Error: {}", e),
-                    };
+                Ok(powed_trytes) => {
+                    pow_tx.try_send(powed_trytes.trytes().unwrap()).unwrap();
                 }
-                Err(e) => eprintln!("Error: {}", e),
-            }
+                Err(e) => eprintln!("Prepare Transfers Error: {}", e),
+            };
         }
-    });
-}
-
-fn store_and_broadcast_thread(
-    uri: String,
-    broadcast_tx: channel::internal::channel::Sender<Vec<String>>,
-    pow_rx: channel::internal::channel::Receiver<Vec<String>>,
-) {
-    thread::spawn(move || {
-        for pow_trytes in pow_rx {
-            block_on(spawn(store_and_broadcast_helper(
-                uri.clone(),
-                broadcast_tx.clone(),
-                pow_trytes,
-            )));
-        }
-    });
-}
-
-async fn store_and_broadcast_helper(
-    uri: String,
-    broadcast_tx: channel::internal::channel::Sender<Vec<String>>,
-    pow_trytes: Vec<String>,
-) {
-    let local_api = iota_api::API::new(&uri);
-    if let Err(e) = await!(local_api.store_and_broadcast(pow_trytes.clone())) {
-        eprintln!("Broadcast Error: {}", e);
+        Err(e) => eprintln!("Error: {}", e),
     }
-    broadcast_tx.send(pow_trytes);
+}
+
+async fn store_and_broadcast(uri: String, pow_trytes: Vec<String>, count: &atomic::AtomicUsize) {
+    let api = iota_api::API::new(&uri);
+    match await!(api.store_and_broadcast(pow_trytes.clone())) {
+        Ok(()) => {
+            let tx: Vec<Transaction> = pow_trytes
+                .iter()
+                .map(|trytes| trytes.parse().unwrap())
+                .collect();
+            count.fetch_add(1, atomic::Ordering::SeqCst);
+            println!(
+                "Transaction {}: {:?}",
+                count.load(atomic::Ordering::SeqCst),
+                tx[0].hash().unwrap()
+            );
+        }
+        Err(e) => eprintln!("Broadcast Error: {}", e),
+    }
 }

@@ -7,7 +7,7 @@ It spams https://trinity.iota.fm by default
 PoW is done locally
 
 ```
-Iota Spammer 0.0.11
+Iota Spammer 0.0.12
 Nathan J. <nathan@jaremko.ca>
 Spams the Iota Network
 
